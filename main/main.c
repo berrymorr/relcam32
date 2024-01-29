@@ -35,10 +35,10 @@ static esp_err_t init_camera(void)
         .ledc_channel = LEDC_CHANNEL_0,
 
         .pixel_format = PIXFORMAT_JPEG,
-        .frame_size = FRAMESIZE_VGA,
+        .frame_size = FRAMESIZE_SVGA,
 
         .jpeg_quality = 10,
-        .fb_count = 1,
+        .fb_count = 4,
         .grab_mode = CAMERA_GRAB_WHEN_EMPTY};//CAMERA_GRAB_LATEST. Sets when buffers should be filled
     esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK)
@@ -49,56 +49,45 @@ static esp_err_t init_camera(void)
 }
 
 esp_err_t jpg_stream_httpd_handler(httpd_req_t *req){
-    camera_fb_t * fb = NULL;
+    camera_fb_t *fb = NULL;
     esp_err_t res = ESP_OK;
     size_t _jpg_buf_len;
-    uint8_t * _jpg_buf;
-    char * part_buf[64];
+    uint8_t *_jpg_buf;
+    char *part_buf[64];
     static int64_t last_frame = 0;
-    if(!last_frame) {
+    if (!last_frame) {
         last_frame = esp_timer_get_time();
     }
 
     res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
-    if(res != ESP_OK){
+    if (res != ESP_OK){
         return res;
     }
 
-    while(true){
+    while (true) {
         fb = esp_camera_fb_get();
         if (!fb) {
             ESP_LOGE(TAG, "Camera capture failed");
             res = ESP_FAIL;
             break;
         }
-        if(fb->format != PIXFORMAT_JPEG){
-            bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
-            if(!jpeg_converted){
-                ESP_LOGE(TAG, "JPEG compression failed");
-                esp_camera_fb_return(fb);
-                res = ESP_FAIL;
-            }
-        } else {
-            _jpg_buf_len = fb->len;
-            _jpg_buf = fb->buf;
-        }
 
-        if(res == ESP_OK){
+        _jpg_buf_len = fb->len;
+        _jpg_buf = fb->buf;
+
+        if (res == ESP_OK) {
             res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
         }
-        if(res == ESP_OK){
+        if (res == ESP_OK) {
             size_t hlen = snprintf((char *)part_buf, 64, _STREAM_PART, _jpg_buf_len);
-
             res = httpd_resp_send_chunk(req, (const char *)part_buf, hlen);
         }
-        if(res == ESP_OK){
+        if (res == ESP_OK) {
             res = httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_buf_len);
         }
-        if(fb->format != PIXFORMAT_JPEG){
-            free(_jpg_buf);
-        }
+
         esp_camera_fb_return(fb);
-        if(res != ESP_OK){
+        if (res != ESP_OK) {
             break;
         }
         int64_t fr_end = esp_timer_get_time();
