@@ -1,13 +1,10 @@
 #include "main.h"
 
-static const char *TAG = "esp32-cam Webserver";
-//CONFIG_ESP32_SPIRAM_SUPPORT=y
-#define PART_BOUNDARY "123456789000000000000987654321"
+static const char *TAG = "httpd";
 static const char* _STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
 static const char* _STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
 static const char* _STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
-#define CONFIG_XCLK_FREQ 20000000 
 
 static esp_err_t init_camera(void)
 {
@@ -41,14 +38,10 @@ static esp_err_t init_camera(void)
         .fb_count = 4,
         .grab_mode = CAMERA_GRAB_WHEN_EMPTY};//CAMERA_GRAB_LATEST. Sets when buffers should be filled
     esp_err_t err = esp_camera_init(&camera_config);
-    if (err != ESP_OK)
-    {
-        return err;
-    }
-    return ESP_OK;
+    return err;
 }
 
-esp_err_t jpg_stream_httpd_handler(httpd_req_t *req){
+esp_err_t jpg_stream_httpd_handler(httpd_req_t *req) {
     camera_fb_t *fb = NULL;
     esp_err_t res = ESP_OK;
     size_t _jpg_buf_len;
@@ -60,7 +53,7 @@ esp_err_t jpg_stream_httpd_handler(httpd_req_t *req){
     }
 
     res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
-    if (res != ESP_OK){
+    if (res != ESP_OK) {
         return res;
     }
 
@@ -170,11 +163,50 @@ int wifi_connect_status() {
     }
 }
 
+#ifdef CONFIG_FREERTOS_USE_TRACE_FACILITY
+void cpu_load_task(void *pvParameter) {
+    while (1) {
+        TaskStatus_t *task_status_array;
+        volatile UBaseType_t num_tasks;
+        uint32_t total_run_time, total_idle_time = 0;
 
-void app_main()
-{
+        num_tasks = uxTaskGetNumberOfTasks();
+        task_status_array = pvPortMalloc(num_tasks * sizeof(TaskStatus_t));
+
+        if (task_status_array != NULL) {
+            num_tasks = uxTaskGetSystemState(task_status_array, num_tasks, &total_run_time);
+
+            for (int i = 0; i < num_tasks; i++) {
+                if (strstr(task_status_array[i].pcTaskName, "IDLE") != NULL) {
+                    total_idle_time += task_status_array[i].ulRunTimeCounter;
+                }
+            }
+
+            uint8_t load_percentage = (uint8_t)(((total_run_time - total_idle_time) * 100) / total_run_time);
+            uint8_t duty_cycle = (255 * load_percentage) / 100;
+
+            gpio_set_level(RED_LED, duty_cycle);
+
+            vPortFree(task_status_array);
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+#endif
+
+void app_main() {
+    #ifdef CONFIG_FREERTOS_USE_TRACE_FACILITY
+    gpio_config_t io_conf;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pin_bit_mask = (1ULL << RED_LED);
+    io_conf.pull_down_en = 0;
+    io_conf.pull_up_en = 0;
+    gpio_config(&io_conf);
+    xTaskCreate(cpu_load_task, "cpu_load_task", 2048, NULL, 5, NULL);
+    #endif
+
     esp_err_t err;
-
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
