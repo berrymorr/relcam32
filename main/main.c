@@ -4,10 +4,95 @@ static const char *TAG = "httpd";
 static const char* _STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
 static const char* _STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
 static const char* _STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
+volatile static EventGroupHandle_t s_wifi_event_group;
+const int WIFI_CONNECTED_BIT = BIT0;
+
+volatile uint32_t idleCounter = 0;
+volatile TaskHandle_t idleTaskHandle[2];
 
 
-static esp_err_t init_camera(void)
-{
+void IRAM_ATTR timer_callback(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx) {
+    // Проверка, выполняется ли задача простоя
+    if (idleTaskHandle[0] == xTaskGetCurrentTaskHandleForCPU(0)) {
+        idleCounter++;
+    }
+    if (idleTaskHandle[1] == xTaskGetCurrentTaskHandleForCPU(1)) {
+        idleCounter++;
+    }
+}
+
+
+void cpu_load_task(void *pvParameter) {
+    volatile static uint32_t currentIdleCounter;
+    uint8_t loadPercentage;
+    while (1) {
+        currentIdleCounter = idleCounter;
+        idleCounter = 0;
+        loadPercentage = (uint8_t)((IDLE_COUNTER_TOTAL_PERCENT - currentIdleCounter)/IDLE_COUNTER_DIVIDER);
+        ESP_LOGI(TAG, "idleCounter: %lu, load %u%%", currentIdleCounter, loadPercentage);
+        uint32_t dutyCycle = 8191 - (8191 * loadPercentage) / 100; // Инвертирование для активного низкого уровня
+        ledc_set_duty(LEDC_HS_MODE, LEDC_HS_CH0_CHANNEL, dutyCycle);
+        ledc_update_duty(LEDC_HS_MODE, LEDC_HS_CH0_CHANNEL);
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+
+void setup_idle_timer() {
+    // Создание и настройка таймера
+    gptimer_handle_t timer_handle;
+    gptimer_config_t timer_config = {
+        .clk_src = GPTIMER_CLK_SRC_DEFAULT,
+        .direction = GPTIMER_COUNT_UP,
+        .resolution_hz = 1000000, // 1 МГц
+    };
+    ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &timer_handle));
+
+    // Регистрация обратного вызова
+    gptimer_event_callbacks_t cbs = {
+        .on_alarm = timer_callback,
+    };
+    ESP_ERROR_CHECK(gptimer_register_event_callbacks(timer_handle, &cbs, NULL));
+
+    // Настройка сигнала тревоги
+    gptimer_alarm_config_t alarm_config = {
+        .reload_count = 0,
+        .alarm_count = IDLE_COUNTER_TIMER_COUNT,
+        .flags.auto_reload_on_alarm = true
+    };
+    ESP_ERROR_CHECK(gptimer_set_alarm_action(timer_handle, &alarm_config));
+
+    // Активация и запуск таймера
+    ESP_ERROR_CHECK(gptimer_enable(timer_handle));
+    ESP_ERROR_CHECK(gptimer_start(timer_handle));
+}
+
+
+void setup_red_led() {
+    ledc_timer_config_t ledc_timer = {
+        .duty_resolution = LEDC_TIMER_13_BIT, // Разрешение 13 бит
+        .freq_hz = 5000,                      // Частота 5 kHz
+        .speed_mode = LEDC_HS_MODE,           // Режим высокой скорости
+        .timer_num = LEDC_HS_TIMER            // Таймер 0
+    };
+    // Настройка таймера ШИМ
+    ledc_timer_config(&ledc_timer);
+
+    ledc_channel_config_t ledc_channel = {
+        .channel    = LEDC_HS_CH0_CHANNEL,
+        .duty       = 0,
+        .gpio_num   = LEDC_HS_CH0_GPIO,
+        .speed_mode = LEDC_HS_MODE,
+        .hpoint     = 0,
+        .timer_sel  = LEDC_HS_TIMER
+    };
+    // Настройка ШИМ канала
+    ledc_channel_config(&ledc_channel);
+}
+
+
+static esp_err_t init_camera(void) {
     camera_config_t camera_config = {
         .pin_pwdn  = CAM_PIN_PWDN,
         .pin_reset = CAM_PIN_RESET,
@@ -40,6 +125,7 @@ static esp_err_t init_camera(void)
     esp_err_t err = esp_camera_init(&camera_config);
     return err;
 }
+
 
 esp_err_t jpg_stream_httpd_handler(httpd_req_t *req) {
     camera_fb_t *fb = NULL;
@@ -87,9 +173,9 @@ esp_err_t jpg_stream_httpd_handler(httpd_req_t *req) {
         int64_t frame_time = fr_end - last_frame;
         last_frame = fr_end;
         frame_time /= 1000;
-        ESP_LOGI(TAG, "MJPG: %uKB %ums (%.1ffps)",
-            (unsigned int)(_jpg_buf_len/1024),
-            (unsigned int)frame_time, (float)(1000.0 / (uint32_t)frame_time));
+        ESP_LOGV(TAG, "MJPG: %uKB %llims (%ifps)",
+            (_jpg_buf_len/1024),
+            frame_time, (int)(1000 / (uint32_t)frame_time));
     }
 
     last_frame = 0;
@@ -114,8 +200,6 @@ httpd_handle_t setup_server(void)
     return stream_httpd;
 }
 
-static EventGroupHandle_t s_wifi_event_group;
-const int WIFI_CONNECTED_BIT = BIT0;
 
 static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
@@ -126,6 +210,7 @@ static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
+
 
 void connect_wifi() {
     s_wifi_event_group = xEventGroupCreate();
@@ -154,6 +239,7 @@ void connect_wifi() {
     xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
 }
 
+
 int wifi_connect_status() {
     wifi_ap_record_t wifidata;
     if (esp_wifi_sta_get_ap_info(&wifidata) == ESP_OK) {
@@ -163,49 +249,14 @@ int wifi_connect_status() {
     }
 }
 
-#ifdef CONFIG_FREERTOS_USE_TRACE_FACILITY
-void cpu_load_task(void *pvParameter) {
-    while (1) {
-        TaskStatus_t *task_status_array;
-        volatile UBaseType_t num_tasks;
-        uint32_t total_run_time, total_idle_time = 0;
-
-        num_tasks = uxTaskGetNumberOfTasks();
-        task_status_array = pvPortMalloc(num_tasks * sizeof(TaskStatus_t));
-
-        if (task_status_array != NULL) {
-            num_tasks = uxTaskGetSystemState(task_status_array, num_tasks, &total_run_time);
-
-            for (int i = 0; i < num_tasks; i++) {
-                if (strstr(task_status_array[i].pcTaskName, "IDLE") != NULL) {
-                    total_idle_time += task_status_array[i].ulRunTimeCounter;
-                }
-            }
-
-            uint8_t load_percentage = (uint8_t)(((total_run_time - total_idle_time) * 100) / total_run_time);
-            uint8_t duty_cycle = (255 * load_percentage) / 100;
-
-            gpio_set_level(RED_LED, duty_cycle);
-
-            vPortFree(task_status_array);
-        }
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
-}
-#endif
 
 void app_main() {
-    #ifdef CONFIG_FREERTOS_USE_TRACE_FACILITY
-    gpio_config_t io_conf;
-    io_conf.intr_type = GPIO_INTR_DISABLE;
-    io_conf.mode = GPIO_MODE_OUTPUT;
-    io_conf.pin_bit_mask = (1ULL << RED_LED);
-    io_conf.pull_down_en = 0;
-    io_conf.pull_up_en = 0;
-    gpio_config(&io_conf);
-    xTaskCreate(cpu_load_task, "cpu_load_task", 2048, NULL, 5, NULL);
-    #endif
+    idleTaskHandle[0] = xTaskGetIdleTaskHandleForCPU(0);
+    idleTaskHandle[1] = xTaskGetIdleTaskHandleForCPU(1);
 
+    setup_red_led();
+    xTaskCreate(cpu_load_task, "cpu_load_task", 2048, NULL, 5, NULL);
+    setup_idle_timer();
     esp_err_t err;
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
