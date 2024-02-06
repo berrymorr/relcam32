@@ -27,6 +27,7 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_timer.h"
+#include "esp_task_wdt.h"
 #include "esp_http_server.h"
 #include "esp_camera.h"
 #include "camera_pins.h"

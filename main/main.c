@@ -7,6 +7,7 @@ static const char* _STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %
 volatile static EventGroupHandle_t s_wifi_event_group;
 const int WIFI_CONNECTED_BIT = BIT0;
 
+volatile esp_task_wdt_user_handle_t wdt_user_handle;
 volatile uint32_t idleCounter = 0;
 volatile TaskHandle_t idleTaskHandle[2];
 
@@ -30,10 +31,10 @@ void cpu_load_task(void *pvParameter) {
         idleCounter = 0;
         loadPercentage = (uint8_t)((IDLE_COUNTER_TOTAL_PERCENT - currentIdleCounter)/IDLE_COUNTER_DIVIDER);
         ESP_LOGI(TAG, "idleCounter: %lu, load %u%%", currentIdleCounter, loadPercentage);
-        uint32_t dutyCycle = 8191 - (8191 * loadPercentage) / 100; // Инвертирование для активного низкого уровня
+        uint32_t dutyCycle = 31 - (31 * loadPercentage) / 100; // Инвертирование для активного низкого уровня
         ledc_set_duty(LEDC_HS_MODE, LEDC_HS_CH0_CHANNEL, dutyCycle);
         ledc_update_duty(LEDC_HS_MODE, LEDC_HS_CH0_CHANNEL);
-
+        ESP_ERROR_CHECK(esp_task_wdt_reset_user(wdt_user_handle));
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -71,7 +72,7 @@ void setup_idle_timer() {
 
 void setup_red_led() {
     ledc_timer_config_t ledc_timer = {
-        .duty_resolution = LEDC_TIMER_13_BIT, // Разрешение 13 бит
+        .duty_resolution = LEDC_TIMER_5_BIT, // Минимальная разрядность 5 бит
         .freq_hz = 5000,                      // Частота 5 kHz
         .speed_mode = LEDC_HS_MODE,           // Режим высокой скорости
         .timer_num = LEDC_HS_TIMER            // Таймер 0
@@ -251,6 +252,14 @@ int wifi_connect_status() {
 
 
 void app_main() {
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = 15000, // Время тайм-аута в миллисекундах
+        .trigger_panic = true, // Вызывать панику при тайм-ауте
+    };
+
+    ESP_ERROR_CHECK(esp_task_wdt_reconfigure(&wdt_config));
+    ESP_ERROR_CHECK(esp_task_wdt_add_user("COMMON", &wdt_user_handle));
+
     idleTaskHandle[0] = xTaskGetIdleTaskHandleForCPU(0);
     idleTaskHandle[1] = xTaskGetIdleTaskHandleForCPU(1);
 
@@ -267,6 +276,7 @@ void app_main() {
     }
     // Initialize Wi-Fi
     connect_wifi();
+    ESP_ERROR_CHECK(esp_task_wdt_reset_user(wdt_user_handle));
 
     if (wifi_connect_status()) {
         ESP_LOGI(TAG, "Connected to WiFi");
@@ -281,4 +291,5 @@ void app_main() {
     } else {
         ESP_LOGE(TAG, "Failed to connect to WiFi");
     }
+    ESP_ERROR_CHECK(esp_task_wdt_reset_user(wdt_user_handle));
 }
