@@ -12,6 +12,144 @@ volatile uint32_t idleCounter = 0;
 volatile TaskHandle_t idleTaskHandle[2];
 
 
+void ngx_unescape_uri(u_char **dst, u_char **src, size_t size, unsigned int type)
+{
+    u_char  *d, *s, ch, c, decoded;
+    enum {
+        sw_usual = 0,
+        sw_quoted,
+        sw_quoted_second
+    } state;
+
+    d = *dst;
+    s = *src;
+
+    state = 0;
+    decoded = 0;
+
+    while (size--) {
+
+        ch = *s++;
+
+        switch (state) {
+        case sw_usual:
+            if (ch == '?'
+                    && (type & (NGX_UNESCAPE_URI | NGX_UNESCAPE_REDIRECT))) {
+                *d++ = ch;
+                goto done;
+            }
+
+            if (ch == '%') {
+                state = sw_quoted;
+                break;
+            }
+
+            *d++ = ch;
+            break;
+        case sw_quoted:
+
+            if (ch >= '0' && ch <= '9') {
+                decoded = (u_char) (ch - '0');
+                state = sw_quoted_second;
+                break;
+            }
+
+            c = (u_char) (ch | 0x20);
+            if (c >= 'a' && c <= 'f') {
+                decoded = (u_char) (c - 'a' + 10);
+                state = sw_quoted_second;
+                break;
+            }
+
+            /* the invalid quoted character */
+
+            state = sw_usual;
+
+            *d++ = ch;
+
+            break;
+
+        case sw_quoted_second:
+
+            state = sw_usual;
+
+            if (ch >= '0' && ch <= '9') {
+                ch = (u_char) ((decoded << 4) + (ch - '0'));
+
+                if (type & NGX_UNESCAPE_REDIRECT) {
+                    if (ch > '%' && ch < 0x7f) {
+                        *d++ = ch;
+                        break;
+                    }
+
+                    *d++ = '%'; *d++ = *(s - 2); *d++ = *(s - 1);
+
+                    break;
+                }
+
+                *d++ = ch;
+
+                break;
+            }
+
+            c = (u_char) (ch | 0x20);
+            if (c >= 'a' && c <= 'f') {
+                ch = (u_char) ((decoded << 4) + (c - 'a') + 10);
+
+                if (type & NGX_UNESCAPE_URI) {
+                    if (ch == '?') {
+                        *d++ = ch;
+                        goto done;
+                    }
+
+                    *d++ = ch;
+                    break;
+                }
+
+                if (type & NGX_UNESCAPE_REDIRECT) {
+                    if (ch == '?') {
+                        *d++ = ch;
+                        goto done;
+                    }
+
+                    if (ch > '%' && ch < 0x7f) {
+                        *d++ = ch;
+                        break;
+                    }
+
+                    *d++ = '%'; *d++ = *(s - 2); *d++ = *(s - 1);
+                    break;
+                }
+
+                *d++ = ch;
+
+                break;
+            }
+
+            /* the invalid quoted character */
+
+            break;
+        }
+    }
+
+done:
+
+    *dst = d;
+    *src = s;
+}
+
+
+void decode_uri(char *dest, const char *src, size_t len) {
+    if (!src || !dest) {
+        return;
+    }
+
+    unsigned char *src_ptr = (unsigned char *)src;
+    unsigned char *dst_ptr = (unsigned char *)dest;
+    ngx_unescape_uri(&dst_ptr, &src_ptr, len, NGX_UNESCAPE_URI);
+}
+
+
 void IRAM_ATTR timer_callback(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_ctx) {
     // Проверка, выполняется ли задача простоя
     if (idleTaskHandle[0] == xTaskGetCurrentTaskHandleForCPU(0)) {
@@ -128,6 +266,34 @@ static esp_err_t init_camera(void) {
 }
 
 
+esp_err_t ota_httpd_handler(httpd_req_t *req) {
+    char param_value[HTTP_QUERY_KEY_MAX_LEN];
+    char decoded_param_value[HTTP_QUERY_KEY_MAX_LEN] = {0};
+    char*  buf;
+    size_t buf_len;
+
+    ESP_LOGI(TAG, "%s", req->uri);
+    
+    buf_len = httpd_req_get_url_query_len(req) + 1;
+    if (buf_len > 1) {
+        buf = malloc(buf_len);
+        ESP_RETURN_ON_FALSE(buf, ESP_ERR_NO_MEM, TAG, "buffer alloc failed");
+        if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+            // ESP_LOGI(TAG, "Found URL query => %s", buf);
+            if (httpd_query_key_value(buf, "src", param_value, sizeof(param_value)) == ESP_OK) {
+                // ESP_LOGI(TAG, "Found URL query parameter => src=%s", param_value);
+                decode_uri(decoded_param_value, param_value, strnlen(param_value, HTTP_QUERY_KEY_MAX_LEN));
+                if (strlen(decoded_param_value)>0) {
+                    ESP_LOGI(TAG, "Starting OTA fw update from %s", decoded_param_value);
+                }
+            }
+        }
+    }
+    // ESP_LOGI(TAG, "%s", decoded_param_value);
+    return ESP_OK;
+}
+
+
 esp_err_t jpg_stream_httpd_handler(httpd_req_t *req) {
     camera_fb_t *fb = NULL;
     esp_err_t res = ESP_OK;
@@ -183,22 +349,31 @@ esp_err_t jpg_stream_httpd_handler(httpd_req_t *req) {
     return res;
 }
 
-httpd_uri_t uri_get = {
-    .uri = "/",
-    .method = HTTP_GET,
-    .handler = jpg_stream_httpd_handler,
-    .user_ctx = NULL};
-httpd_handle_t setup_server(void)
-{
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    httpd_handle_t stream_httpd  = NULL;
 
-    if (httpd_start(&stream_httpd , &config) == ESP_OK)
+void setup_server(void)
+{
+    httpd_uri_t mjpeg_uri = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = jpg_stream_httpd_handler,
+        .user_ctx = NULL
+    };
+    httpd_uri_t ota_uri = {
+        .uri = "/ota",
+        .method = HTTP_GET,
+        .handler = ota_httpd_handler,
+        .user_ctx = NULL
+    };
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    httpd_handle_t httpd_handle  = NULL;
+
+    if (httpd_start(&httpd_handle , &config) == ESP_OK)
     {
-        httpd_register_uri_handler(stream_httpd , &uri_get);
+        httpd_register_uri_handler(httpd_handle, &mjpeg_uri);
+        httpd_register_uri_handler(httpd_handle, &ota_uri);
     }
 
-    return stream_httpd;
+    // return stream_httpd;
 }
 
 
@@ -263,9 +438,6 @@ void app_main() {
     idleTaskHandle[0] = xTaskGetIdleTaskHandleForCPU(0);
     idleTaskHandle[1] = xTaskGetIdleTaskHandleForCPU(1);
 
-    setup_red_led();
-    xTaskCreate(cpu_load_task, "cpu_load_task", 2048, NULL, 5, NULL);
-    setup_idle_timer();
     esp_err_t err;
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
@@ -276,7 +448,7 @@ void app_main() {
     }
     // Initialize Wi-Fi
     connect_wifi();
-    ESP_ERROR_CHECK(esp_task_wdt_reset_user(wdt_user_handle));
+    // ESP_ERROR_CHECK(esp_task_wdt_reset_user(wdt_user_handle));
 
     if (wifi_connect_status()) {
         ESP_LOGI(TAG, "Connected to WiFi");
@@ -291,5 +463,8 @@ void app_main() {
     } else {
         ESP_LOGE(TAG, "Failed to connect to WiFi");
     }
-    ESP_ERROR_CHECK(esp_task_wdt_reset_user(wdt_user_handle));
+    // ESP_ERROR_CHECK(esp_task_wdt_reset_user(wdt_user_handle));
+    setup_red_led();
+    xTaskCreate(cpu_load_task, "cpu_load_task", 2048, NULL, 5, NULL);
+    setup_idle_timer();
 }

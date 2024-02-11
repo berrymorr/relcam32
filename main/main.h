@@ -6,6 +6,9 @@
 #define IDLE_COUNTER_TOTAL_PERCENT (2000000/IDLE_COUNTER_TIMER_COUNT)
 #define IDLE_COUNTER_DIVIDER (20000/IDLE_COUNTER_TIMER_COUNT)
 #define PART_BOUNDARY "123456789000000000000987654321"
+#define HTTP_QUERY_KEY_MAX_LEN 255
+#define NGX_UNESCAPE_URI (1)
+#define NGX_UNESCAPE_REDIRECT (2)
 
 #define LEDC_HS_TIMER          LEDC_TIMER_1
 #define LEDC_HS_MODE           LEDC_HIGH_SPEED_MODE
@@ -22,6 +25,8 @@
 #include "driver/ledc.h"
 #include "driver/gptimer.h"
 #include "esp_system.h"
+#include "esp_types.h"
+#include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -33,6 +38,14 @@
 #include "camera_pins.h"
 
 #include "private_data.h"
+
+#define ESP_RETURN_ON_FALSE(expr, ret, tag, fmt, ...) do { \
+    if (!(expr)) { \
+        ESP_LOGE(tag, fmt, ##__VA_ARGS__); \
+        return (ret); \
+    } \
+} while(0)
+
 
 void connect_wifi();
 int wifi_connect_status();
