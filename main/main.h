@@ -1,7 +1,11 @@
 #define CONFIG_BOARD_ESP32CAM_AITHINKER 1
+#define CONFIG_CAMERA_FRAMEBUFFERS_COUNT 2
+#define CONFIG_XCLK_FREQ 20000000 
+
+#define CONFIG_WDT_COMMON_TIMEOUT 30000
+
 #define RED_LED GPIO_NUM_33
 #define WHITE_LED GPIO_NUM_4
-#define CONFIG_XCLK_FREQ 20000000 
 #define IDLE_COUNTER_TIMER_COUNT 10000 //(100,1000,10000)
 #define IDLE_COUNTER_TOTAL_PERCENT (2000000/IDLE_COUNTER_TIMER_COUNT)
 #define IDLE_COUNTER_DIVIDER (20000/IDLE_COUNTER_TIMER_COUNT)
@@ -17,13 +21,16 @@
 #define LEDC_TEST_DUTY         (4000)
 #define LEDC_TEST_FADE_TIME    (3000)
 
-#include "nvs_flash.h"
+#define OTA_BUF_SIZE  1024
+#define CONFIG_OTA_RECV_TIMEOUT 15000
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "driver/gptimer.h"
+#include "nvs_flash.h"
 #include "esp_system.h"
 #include "esp_types.h"
 #include "esp_attr.h"
@@ -35,7 +42,11 @@
 #include "esp_task_wdt.h"
 #include "esp_http_server.h"
 #include "esp_camera.h"
+#include "esp_http_client.h"
+#include "esp_ota_ops.h"
 #include "camera_pins.h"
+
+#include <inttypes.h>
 
 #include "private_data.h"
 
