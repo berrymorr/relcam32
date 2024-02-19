@@ -11,94 +11,6 @@ volatile esp_task_wdt_user_handle_t wdt_user_handle;
 volatile uint32_t idleCounter = 0;
 volatile TaskHandle_t idleTaskHandle[2];
 
-/*
-esp_err_t esp_http_ota(const esp_http_client_config_t *config) {
-    esp_err_t err;
-    esp_ota_handle_t update_handle = 0;
-    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
-    if (!update_partition) {
-        ESP_LOGE("ota", "Failed to find OTA partition");
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI("ota", "Starting OTA... partition subtype %d at offset 0x%" PRIx32, update_partition->subtype, update_partition->address);
-    err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE("ota", "Failed esp_ota_begin: %s", esp_err_to_name(err));
-        return err;
-    }
-    esp_http_client_handle_t client = esp_http_client_init(config);
-    if (client == NULL) {
-        ESP_LOGE("ota", "Failed to initialise HTTP connection");
-        return ESP_FAIL;
-    }
-
-    err = esp_http_client_open(client, 0);
-    if (err != ESP_OK) {
-        ESP_LOGE("ota", "Failed to open HTTP connection: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(client);
-        return err;
-    }
-
-    int http_status = esp_http_client_get_status_code(client);
-    ESP_LOGI("ota", "HTTP status: %i", http_status);
-    if (http_status > 299 || http_status < 200) {
-        esp_http_client_cleanup(client);
-        return ESP_FAIL;
-    }
-    char ota_write_data[OTA_BUF_SIZE]; // Буфер для записи данных OTA, локально в функции
-    int data_read;
-    int binary_file_length = 0;
-
-    while (1) {
-        int data_read = esp_http_client_read(client, ota_write_data, OTA_BUF_SIZE);
-        if (data_read < 0) {
-            ESP_LOGE("ota", "Error: data read error");
-            esp_http_client_cleanup(client);
-            esp_ota_abort(update_handle);
-            return ESP_FAIL;
-        } else if (data_read > 0) {
-            err = esp_ota_write(update_handle, (const void *)ota_write_data, data_read);
-            if (err != ESP_OK) {
-                ESP_LOGE("ota", "Error: ota_write failed");
-                esp_http_client_cleanup(client);
-                esp_ota_abort(update_handle);
-                return ESP_FAIL;
-            }
-            binary_file_length += data_read;
-            ESP_LOGI("ota", "Written image length %d", binary_file_length);
-        } else if (data_read == 0) {
-            if (esp_http_client_is_complete_data_received(client) == true) {
-                ESP_LOGI("ota", "Download completed");
-                break;
-            }
-        }
-    }
-
-    // Проверка, был ли получен полный файл
-    if (esp_http_client_is_complete_data_received(client) != true) {
-        ESP_LOGE("ota", "Error: complete file not received");
-        esp_http_client_cleanup(client);
-        esp_ota_abort(update_handle);
-        return ESP_FAIL;
-    }
-    err = esp_ota_end(update_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE("ota", "esp_ota_end failed: %s", esp_err_to_name(err));
-        err = ESP_FAIL;
-    } else if (err == ESP_OK) { // Ensure previous steps succeeded
-        err = esp_ota_set_boot_partition(update_partition);
-        if (err != ESP_OK) {
-            ESP_LOGE("ota", "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
-        } else {
-            ESP_LOGI("ota", "OTA succeeded");
-        }
-    }
-
-    esp_http_client_cleanup(client);
-    return err;
-}
-*/
 
 esp_err_t esp_http_ota(const char *url) {
     esp_err_t err;
@@ -579,7 +491,7 @@ void setup_server(void)
         .uri = "/ota",
         .method = HTTP_GET,
         .handler = ota_httpd_handler,
-        .user_ctx = "OTA fw triggered"
+        .user_ctx = NULL
     };
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 8192;
@@ -591,7 +503,6 @@ void setup_server(void)
         httpd_register_uri_handler(httpd_handle, &ota_uri);
     }
 
-    // return stream_httpd;
 }
 
 
